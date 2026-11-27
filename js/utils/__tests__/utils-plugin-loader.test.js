@@ -331,4 +331,127 @@ describe("updatePluginObj - prototype pollution guard", () => {
         expect(activity.pluginObjs["PALETTEPLUGINS"]["maths"]).toEqual({ name: "maths" });
         expect(activity.pluginObjs["ARGPLUGINS"]["a"]).toBe("code");
     });
+
+    it("ignores non-object obj values and non-object sections without throwing", () => {
+        const activity = {
+            pluginObjs: {
+                PALETTEPLUGINS: { existing: "icon" },
+                IMAGES: { existingImg: "data:existing" }
+            }
+        };
+
+        for (const badObj of [null, undefined, true, 42, "string", []]) {
+            expect(() => updatePluginObj(activity, badObj)).not.toThrow();
+        }
+
+        expect(() =>
+            updatePluginObj(activity, {
+                PALETTEPLUGINS: null,
+                PALETTEFILLCOLORS: "bad",
+                IMAGES: null,
+                FLOWPLUGINS: 123,
+                ARGPLUGINS: [],
+                GLOBALS: 999
+            })
+        ).not.toThrow();
+
+        expect(activity.pluginObjs.PALETTEPLUGINS.existing).toBe("icon");
+        expect(activity.pluginObjs.IMAGES.existingImg).toBe("data:existing");
+        expect(activity.pluginObjs.GLOBALS).toBeUndefined();
+    });
+
+    it("filters unsafe keys and merges entries in IMAGES", () => {
+        const activity = {
+            pluginObjs: {
+                IMAGES: { keepMe: "data:keep" }
+            }
+        };
+        const maliciousImages = JSON.parse(
+            '{"IMAGES": {"__proto__": {"polluted": true}, "constructor": "bad", "newImg": "data:new"}}'
+        );
+
+        updatePluginObj(activity, maliciousImages);
+
+        expect(Object.prototype.polluted).toBeUndefined();
+        expect(Object.prototype.hasOwnProperty.call(activity.pluginObjs.IMAGES, "__proto__")).toBe(
+            false
+        );
+        expect(
+            Object.prototype.hasOwnProperty.call(activity.pluginObjs.IMAGES, "constructor")
+        ).toBe(false);
+        expect(activity.pluginObjs.IMAGES.keepMe).toBe("data:keep");
+        expect(activity.pluginObjs.IMAGES.newImg).toBe("data:new");
+    });
+});
+
+describe("processPluginData - malformed non-object inputs and source escaping", () => {
+    let processPluginData;
+    let originalConfirm;
+
+    beforeEach(() => {
+        jest.useFakeTimers();
+        jest.resetModules();
+        global._ = msg => msg;
+        global.PALETTEICONS = {};
+        global.PALETTEFILLCOLORS = {};
+        global.PALETTESTROKECOLORS = {};
+        global.PALETTEHIGHLIGHTCOLORS = {};
+        global.HIGHLIGHTSTROKECOLORS = {};
+        global.MULTIPALETTES = [[], [], []];
+        global.platformColor = { paletteColors: {} };
+        originalConfirm = global.confirm;
+        global.confirm = jest.fn(() => false);
+        ({ processPluginData } = require("../plugin-utils.js"));
+    });
+
+    afterEach(() => {
+        global.confirm = originalConfirm;
+        jest.useRealTimers();
+    });
+
+    it.each(["null", "42", "true", '"hello"', "[]"])(
+        "returns null instead of throwing TypeError when JSON parses to %s",
+        async rawJson => {
+            const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+            const res = await processPluginData(createActivity(), rawJson, "plugins/test.json");
+            expect(res).toBeNull();
+            expect(errorSpy).toHaveBeenCalled();
+            errorSpy.mockRestore();
+        }
+    );
+
+    it("skips null or non-object plugin sections without throwing", async () => {
+        const activity = createActivity();
+        const data = JSON.stringify({
+            PALETTEPLUGINS: null,
+            PALETTEFILLCOLORS: "bad",
+            PALETTESTROKECOLORS: 123,
+            PALETTEHIGHLIGHTCOLORS: [],
+            HIGHLIGHTSTROKECOLORS: false,
+            IMAGES: null,
+            FLOWPLUGINS: null,
+            ARGPLUGINS: "bad",
+            MACROPLUGINS: 42,
+            SETTERPLUGINS: [],
+            BLOCKPLUGINS: null,
+            PARAMETERPLUGINS: null,
+            ONLOAD: null,
+            ONSTART: null,
+            ONSTOP: null
+        });
+
+        const res = await processPluginData(activity, data, "plugins/test.json");
+        expect(res).toEqual(JSON.parse(data));
+    });
+
+    it("preserves $ replacement tokens literally in unvetted source warning", async () => {
+        const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+        const source = "https://example.com/$&$1/$$/plugin.json";
+
+        await processPluginData(createActivity(), "{}", source);
+
+        expect(global.confirm).toHaveBeenCalledTimes(1);
+        expect(global.confirm.mock.calls[0][0]).toContain(`Source: ${source}`);
+        warnSpy.mockRestore();
+    });
 });

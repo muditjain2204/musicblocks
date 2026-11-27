@@ -1573,9 +1573,13 @@ describe("Plugin and Macro Utilities", () => {
 
         it("handles unexpected errors gracefully", async () => {
             const spy = jest.spyOn(console, "debug").mockImplementation(() => {});
-            // Passing "true" makes JSON.parse succeed (returns boolean true), but triggers a
-            // TypeError in processPluginData ("PALETTEPLUGINS" in obj) which then hits the catch block.
-            const rawData = "true";
+            mockActivity.palettes = {
+                buttons: {},
+                add: () => {
+                    throw new Error("Palette registration failed");
+                }
+            };
+            const rawData = '{"PALETTEPLUGINS": {"test": "val"}}';
             const res = await processRawPluginData(mockActivity, rawData, "localStorage:plugins");
             expect(res).toBeNull();
             expect(spy).toHaveBeenCalledWith(rawData);

@@ -23,6 +23,55 @@ if (typeof module !== "undefined" && module.exports) {
 }
 
 /**
+ * Returns true for plain non-null, non-array objects.
+ * @param {*} value - The value to check.
+ * @returns {boolean}
+ */
+const isPlainObject = value => value !== null && typeof value === "object" && !Array.isArray(value);
+
+/**
+ * Iterates own enumerable entries of a plain object while skipping unsafe keys.
+ * @param {*} section - Candidate plugin section object.
+ * @param {function(string, *): void} fn - Callback invoked for each safe entry.
+ */
+const forEachSafeEntry = (section, fn) => {
+    if (!isPlainObject(section)) {
+        return;
+    }
+    for (const key of Object.keys(section)) {
+        if (isUnsafeObjectKey(key)) continue;
+        fn(key, section[key]);
+    }
+};
+
+/**
+ * Reads a safe own property from an optional plain object, or returns a fallback.
+ * @param {*} section - Candidate section object.
+ * @param {string} key - Property name to look up.
+ * @param {*} fallback - Fallback value when missing.
+ * @returns {*}
+ */
+const getSafeSectionValue = (section, key, fallback) =>
+    isPlainObject(section) && Object.prototype.hasOwnProperty.call(section, key)
+        ? section[key]
+        : fallback;
+
+const PLUGIN_OBJECT_SECTIONS = [
+    "PALETTEPLUGINS",
+    "PALETTEFILLCOLORS",
+    "PALETTESTROKECOLORS",
+    "PALETTEHIGHLIGHTCOLORS",
+    "FLOWPLUGINS",
+    "ARGPLUGINS",
+    "BLOCKPLUGINS",
+    "MACROPLUGINS",
+    "IMAGES",
+    "ONLOAD",
+    "ONSTART",
+    "ONSTOP"
+];
+
+/**
  * Processes plugin data and updates the activity based on the provided JSON-encoded dictionary.
  * @param {object} activity - The activity object to update.
  * @param {string} pluginData - The JSON-encoded plugin data.
@@ -60,7 +109,7 @@ const processPluginData = async (activity, pluginData, pluginSource) => {
                 "\n\n" +
                 _("Do you want to allow this plugin to run?") +
                 "\n\n" +
-                _("Source: %s").replace(/%s/g, pluginSource || _("unknown"))
+                _("Source: %s").replace(/%s/g, () => pluginSource || _("unknown"))
         );
 
         if (!userConfirmed) {
@@ -104,67 +153,52 @@ const processPluginData = async (activity, pluginData, pluginSource) => {
         console.debug("Malformed plugin data:", pluginData);
         return null;
     }
+
+    if (!isPlainObject(obj)) {
+        console.error(
+            `PluginProcessor: Expected plugin object from source "${pluginSource}", got ${
+                Array.isArray(obj) ? "array" : typeof obj
+            }`
+        );
+        return null;
+    }
+
     // Create a palette entry.
     let newPalette = false,
         paletteName = null;
-    if ("PALETTEPLUGINS" in obj) {
-        for (const name of Object.keys(obj["PALETTEPLUGINS"])) {
-            if (isUnsafeObjectKey(name)) continue;
-            paletteName = name;
-            PALETTEICONS[name] = obj["PALETTEPLUGINS"][name];
-            let fillColor = "#ff0066";
-            if ("PALETTEFILLCOLORS" in obj) {
-                if (name in obj["PALETTEFILLCOLORS"]) {
-                    fillColor = obj["PALETTEFILLCOLORS"][name];
-                }
-            }
+    const fillColors = obj["PALETTEFILLCOLORS"];
+    const strokeColors = obj["PALETTESTROKECOLORS"];
+    const highlightColors = obj["PALETTEHIGHLIGHTCOLORS"];
+    const highlightStrokeColors = obj["HIGHLIGHTSTROKECOLORS"];
 
-            PALETTEFILLCOLORS[name] = fillColor;
+    forEachSafeEntry(obj["PALETTEPLUGINS"], (name, icon) => {
+        paletteName = name;
+        PALETTEICONS[name] = icon;
+        const fillColor = getSafeSectionValue(fillColors, name, "#ff0066");
+        PALETTEFILLCOLORS[name] = fillColor;
+        const strokeColor = getSafeSectionValue(strokeColors, name, "#ef003e");
+        PALETTESTROKECOLORS[name] = strokeColor;
+        const highlightColor = getSafeSectionValue(highlightColors, name, "#ffb1b3");
+        PALETTEHIGHLIGHTCOLORS[name] = highlightColor;
+        const strokeHighlightColor = getSafeSectionValue(highlightStrokeColors, name, "#404040");
+        HIGHLIGHTSTROKECOLORS[name] = strokeHighlightColor;
 
-            let strokeColor = "#ef003e";
-            if ("PALETTESTROKECOLORS" in obj) {
-                if (name in obj["PALETTESTROKECOLORS"]) {
-                    strokeColor = obj["PALETTESTROKECOLORS"][name];
-                }
-            }
+        platformColor.paletteColors[name] = [
+            fillColor,
+            strokeColor,
+            highlightColor,
+            strokeHighlightColor
+        ];
 
-            PALETTESTROKECOLORS[name] = strokeColor;
-
-            let highlightColor = "#ffb1b3";
-            if ("PALETTEHIGHLIGHTCOLORS" in obj) {
-                if (name in obj["PALETTEHIGHLIGHTCOLORS"]) {
-                    highlightColor = obj["PALETTEHIGHLIGHTCOLORS"][name];
-                }
-            }
-
-            PALETTEHIGHLIGHTCOLORS[name] = highlightColor;
-
-            let strokeHighlightColor = "#404040";
-            if ("HIGHLIGHTSTROKECOLORS" in obj) {
-                if (name in obj["HIGHLIGHTSTROKECOLORS"]) {
-                    strokeHighlightColor = obj["HIGHLIGHTSTROKECOLORS"][name];
-                }
-            }
-
-            HIGHLIGHTSTROKECOLORS[name] = strokeHighlightColor;
-
-            platformColor.paletteColors[name] = [
-                fillColor,
-                strokeColor,
-                highlightColor,
-                strokeHighlightColor
-            ];
-
-            if (name in activity.palettes.buttons) {
-                console.debug("palette " + name + " already exists");
-            } else {
-                console.debug("adding palette " + name);
-                activity.palettes.add(name);
-                if (!MULTIPALETTES[2].includes(name)) MULTIPALETTES[2].push(name);
-                newPalette = true;
-            }
+        if (name in activity.palettes.buttons) {
+            console.debug("palette " + name + " already exists");
+        } else {
+            console.debug("adding palette " + name);
+            activity.palettes.add(name);
+            if (!MULTIPALETTES[2].includes(name)) MULTIPALETTES[2].push(name);
+            newPalette = true;
         }
-    }
+    });
 
     if (newPalette) {
         try {
@@ -176,168 +210,130 @@ const processPluginData = async (activity, pluginData, pluginSource) => {
     }
 
     // Define the image blocks
-    if ("IMAGES" in obj) {
-        for (const blkName of Object.keys(obj["IMAGES"])) {
-            if (isUnsafeObjectKey(blkName)) continue;
-            activity.pluginsImages[blkName] = obj["IMAGES"][blkName];
-        }
-    }
+    forEachSafeEntry(obj["IMAGES"], (blkName, imageData) => {
+        activity.pluginsImages[blkName] = imageData;
+    });
 
     // Populate the flow-block dictionary, i.e., the code that is
     // compiled into a function for hot-path execution.
-    if ("FLOWPLUGINS" in obj) {
-        for (const flow of Object.keys(obj["FLOWPLUGINS"])) {
-            if (isUnsafeObjectKey(flow)) continue;
-            // Pre-compile trusted plugins for performance.
-            // UNTRUSTED plugins (if any made it past confirmation) are stored as strings
-            // and handled via whitelist in safePluginExecute.
-            if (isVettedPlugin(pluginSource)) {
-                const flowCode = obj["FLOWPLUGINS"][flow];
-                const registryName = `flow_${flow}_${Math.random().toString(36).slice(2, 11)}`;
-                blobScriptContent += `
+    forEachSafeEntry(obj["FLOWPLUGINS"], (flow, flowCode) => {
+        // Pre-compile trusted plugins for performance.
+        // UNTRUSTED plugins (if any made it past confirmation) are stored as strings
+        // and handled via whitelist in safePluginExecute.
+        if (isVettedPlugin(pluginSource)) {
+            const registryName = `flow_${flow}_${Math.random().toString(36).slice(2, 11)}`;
+            blobScriptContent += `
 window.__mb_plugin_registry["${registryName}"] = function(logo, turtle, blk, receivedArg, actionArgs, args, isflow) {
     ${flowCode}
 };
 `;
-                activity.logo.evalFlowDict[flow] = registryName; // Will be replaced by function after load
-            } else {
-                activity.logo.evalFlowDict[flow] = obj["FLOWPLUGINS"][flow];
-            }
+            activity.logo.evalFlowDict[flow] = registryName; // Will be replaced by function after load
+        } else {
+            activity.logo.evalFlowDict[flow] = flowCode;
         }
-    }
+    });
 
     // Populate the arg-block dictionary
-    if ("ARGPLUGINS" in obj) {
-        for (const arg of Object.keys(obj["ARGPLUGINS"])) {
-            if (isUnsafeObjectKey(arg)) continue;
-            if (isVettedPlugin(pluginSource)) {
-                const argCode = obj["ARGPLUGINS"][arg];
-                const registryName = `arg_${arg}_${Math.random().toString(36).slice(2, 11)}`;
-                blobScriptContent += `
+    forEachSafeEntry(obj["ARGPLUGINS"], (arg, argCode) => {
+        if (isVettedPlugin(pluginSource)) {
+            const registryName = `arg_${arg}_${Math.random().toString(36).slice(2, 11)}`;
+            blobScriptContent += `
 window.__mb_plugin_registry["${registryName}"] = function(logo, turtle, blk, parentBlk, receivedArg, tur) {
     ${argCode}
 };
 `;
-                activity.logo.evalArgDict[arg] = registryName;
-            } else {
-                activity.logo.evalArgDict[arg] = obj["ARGPLUGINS"][arg];
-            }
+            activity.logo.evalArgDict[arg] = registryName;
+        } else {
+            activity.logo.evalArgDict[arg] = argCode;
         }
-    }
+    });
 
     // Populate the macro dictionary, i.e., the code that is
     // eval'd by this block.
-    if ("MACROPLUGINS" in obj) {
-        for (const macro of Object.keys(obj["MACROPLUGINS"])) {
-            if (isUnsafeObjectKey(macro)) continue;
-            try {
-                activity.palettes.pluginMacros[macro] = JSON.parse(obj["MACROPLUGINS"][macro]);
-            } catch (e) {
-                console.debug("could not parse macro " + macro);
+    forEachSafeEntry(obj["MACROPLUGINS"], (macro, macroData) => {
+        try {
+            activity.palettes.pluginMacros[macro] = JSON.parse(macroData);
+        } catch (e) {
+            console.debug("could not parse macro " + macro);
 
-                console.debug(e);
-            }
+            console.debug(e);
         }
-    }
+    });
 
     // Populate the setter dictionary
-    if ("SETTERPLUGINS" in obj) {
-        for (const setter of Object.keys(obj["SETTERPLUGINS"])) {
-            if (isUnsafeObjectKey(setter)) continue;
-            if (isVettedPlugin(pluginSource)) {
-                const setterCode = obj["SETTERPLUGINS"][setter];
-                const registryName = `setter_${setter}_${Math.random().toString(36).slice(2, 11)}`;
-                blobScriptContent += `
+    forEachSafeEntry(obj["SETTERPLUGINS"], (setter, setterCode) => {
+        if (isVettedPlugin(pluginSource)) {
+            const registryName = `setter_${setter}_${Math.random().toString(36).slice(2, 11)}`;
+            blobScriptContent += `
 window.__mb_plugin_registry["${registryName}"] = function(logo, blk, value, turtle) {
     ${setterCode}
 };
 `;
-                activity.logo.evalSetterDict[setter] = registryName;
-            } else {
-                activity.logo.evalSetterDict[setter] = obj["SETTERPLUGINS"][setter];
-            }
+            activity.logo.evalSetterDict[setter] = registryName;
+        } else {
+            activity.logo.evalSetterDict[setter] = setterCode;
         }
-    }
+    });
 
     // Create the plugin protoblocks.
-    if ("BLOCKPLUGINS" in obj) {
-        for (const block of Object.keys(obj["BLOCKPLUGINS"])) {
-            if (isUnsafeObjectKey(block)) continue;
-            console.debug("adding plugin block " + block);
-            safeEval(obj["BLOCKPLUGINS"][block], "BLOCKPLUGINS:" + block);
-        }
-    }
+    forEachSafeEntry(obj["BLOCKPLUGINS"], (block, blockCode) => {
+        console.debug("adding plugin block " + block);
+        safeEval(blockCode, "BLOCKPLUGINS:" + block);
+    });
 
     // Create the globals.
     if ("GLOBALS" in obj) {
         safeEval(obj["GLOBALS"], "GLOBALS");
     }
 
-    if ("PARAMETERPLUGINS" in obj) {
-        for (const parameter of Object.keys(obj["PARAMETERPLUGINS"])) {
-            if (isUnsafeObjectKey(parameter)) continue;
-            if (isVettedPlugin(pluginSource)) {
-                const paramCode = obj["PARAMETERPLUGINS"][parameter];
-                const registryName = `param_${parameter}_${Math.random()
-                    .toString(36)
-                    .slice(2, 11)}`;
-                blobScriptContent += `
+    forEachSafeEntry(obj["PARAMETERPLUGINS"], (parameter, paramCode) => {
+        if (isVettedPlugin(pluginSource)) {
+            const registryName = `param_${parameter}_${Math.random().toString(36).slice(2, 11)}`;
+            blobScriptContent += `
 window.__mb_plugin_registry["${registryName}"] = function(logo, turtle, blk) {
     ${paramCode}
 };
 `;
-                activity.logo.evalParameterDict[parameter] = registryName;
-            } else {
-                activity.logo.evalParameterDict[parameter] = obj["PARAMETERPLUGINS"][parameter];
-            }
+            activity.logo.evalParameterDict[parameter] = registryName;
+        } else {
+            activity.logo.evalParameterDict[parameter] = paramCode;
         }
-    }
+    });
 
     // Code to execute when plugin is loaded
-    if ("ONLOAD" in obj) {
-        for (const arg of Object.keys(obj["ONLOAD"])) {
-            if (isUnsafeObjectKey(arg)) continue;
-            safeEval(obj["ONLOAD"][arg], "ONLOAD:" + arg);
-        }
-    }
+    forEachSafeEntry(obj["ONLOAD"], (arg, onLoadCode) => {
+        safeEval(onLoadCode, "ONLOAD:" + arg);
+    });
 
     // Code to execute when turtle code is started
-    if ("ONSTART" in obj) {
-        for (const arg of Object.keys(obj["ONSTART"])) {
-            if (isUnsafeObjectKey(arg)) continue;
-            if (isVettedPlugin(pluginSource)) {
-                const onStartCode = obj["ONSTART"][arg];
-                const registryName = `onstart_${arg}_${Math.random().toString(36).slice(2, 11)}`;
-                blobScriptContent += `
+    forEachSafeEntry(obj["ONSTART"], (arg, onStartCode) => {
+        if (isVettedPlugin(pluginSource)) {
+            const registryName = `onstart_${arg}_${Math.random().toString(36).slice(2, 11)}`;
+            blobScriptContent += `
 window.__mb_plugin_registry["${registryName}"] = function(logo) {
     ${onStartCode}
 };
 `;
-                activity.logo.evalOnStartList[arg] = registryName;
-            } else {
-                activity.logo.evalOnStartList[arg] = obj["ONSTART"][arg];
-            }
+            activity.logo.evalOnStartList[arg] = registryName;
+        } else {
+            activity.logo.evalOnStartList[arg] = onStartCode;
         }
-    }
+    });
 
     // Code to execute when turtle code is stopped
-    if ("ONSTOP" in obj) {
-        for (const arg of Object.keys(obj["ONSTOP"])) {
-            if (isUnsafeObjectKey(arg)) continue;
-            if (isVettedPlugin(pluginSource)) {
-                const onStopCode = obj["ONSTOP"][arg];
-                const registryName = `onstop_${arg}_${Math.random().toString(36).slice(2, 11)}`;
-                blobScriptContent += `
+    forEachSafeEntry(obj["ONSTOP"], (arg, onStopCode) => {
+        if (isVettedPlugin(pluginSource)) {
+            const registryName = `onstop_${arg}_${Math.random().toString(36).slice(2, 11)}`;
+            blobScriptContent += `
 window.__mb_plugin_registry["${registryName}"] = function(logo) {
     ${onStopCode}
 };
 `;
-                activity.logo.evalOnStopList[arg] = registryName;
-            } else {
-                activity.logo.evalOnStopList[arg] = obj["ONSTOP"][arg];
-            }
+            activity.logo.evalOnStopList[arg] = registryName;
+        } else {
+            activity.logo.evalOnStopList[arg] = onStopCode;
         }
-    }
+    });
 
     // Now execute the Blob script injection if we have collected any trusted code
     if (blobScriptContent) {
@@ -517,97 +513,27 @@ const processRawPluginData = async (activity, rawData, pluginSource) => {
  * @param {object} obj - The processed plugin data object.
  */
 const updatePluginObj = (activity, obj) => {
-    if (obj === null) {
+    if (!isPlainObject(obj)) {
         return;
     }
 
-    if ("PALETTEPLUGINS" in obj) {
-        for (const name of Object.keys(obj["PALETTEPLUGINS"])) {
-            if (isUnsafeObjectKey(name)) continue;
-            activity.pluginObjs["PALETTEPLUGINS"][name] = obj["PALETTEPLUGINS"][name];
+    for (const section of PLUGIN_OBJECT_SECTIONS) {
+        if (!isPlainObject(obj[section])) {
+            continue;
         }
+        if (!isPlainObject(activity.pluginObjs[section])) {
+            activity.pluginObjs[section] = {};
+        }
+        forEachSafeEntry(obj[section], (key, value) => {
+            activity.pluginObjs[section][key] = value;
+        });
     }
 
-    if ("PALETTEFILLCOLORS" in obj) {
-        for (const name of Object.keys(obj["PALETTEFILLCOLORS"])) {
-            if (isUnsafeObjectKey(name)) continue;
-            activity.pluginObjs["PALETTEFILLCOLORS"][name] = obj["PALETTEFILLCOLORS"][name];
-        }
-    }
-
-    if ("PALETTESTROKECOLORS" in obj) {
-        for (const name of Object.keys(obj["PALETTESTROKECOLORS"])) {
-            if (isUnsafeObjectKey(name)) continue;
-            activity.pluginObjs["PALETTESTROKECOLORS"][name] = obj["PALETTESTROKECOLORS"][name];
-        }
-    }
-
-    if ("PALETTEHIGHLIGHTCOLORS" in obj) {
-        for (const name of Object.keys(obj["PALETTEHIGHLIGHTCOLORS"])) {
-            if (isUnsafeObjectKey(name)) continue;
-            activity.pluginObjs["PALETTEHIGHLIGHTCOLORS"][name] =
-                obj["PALETTEHIGHLIGHTCOLORS"][name];
-        }
-    }
-
-    if ("FLOWPLUGINS" in obj) {
-        for (const flow of Object.keys(obj["FLOWPLUGINS"])) {
-            if (isUnsafeObjectKey(flow)) continue;
-            activity.pluginObjs["FLOWPLUGINS"][flow] = obj["FLOWPLUGINS"][flow];
-        }
-    }
-
-    if ("ARGPLUGINS" in obj) {
-        for (const arg of Object.keys(obj["ARGPLUGINS"])) {
-            if (isUnsafeObjectKey(arg)) continue;
-            activity.pluginObjs["ARGPLUGINS"][arg] = obj["ARGPLUGINS"][arg];
-        }
-    }
-
-    if ("BLOCKPLUGINS" in obj) {
-        for (const block of Object.keys(obj["BLOCKPLUGINS"])) {
-            if (isUnsafeObjectKey(block)) continue;
-            activity.pluginObjs["BLOCKPLUGINS"][block] = obj["BLOCKPLUGINS"][block];
-        }
-    }
-
-    if ("MACROPLUGINS" in obj) {
-        for (const macro of Object.keys(obj["MACROPLUGINS"])) {
-            if (isUnsafeObjectKey(macro)) continue;
-            activity.pluginObjs["MACROPLUGINS"][macro] = obj["MACROPLUGINS"][macro];
-        }
-    }
-
-    if ("GLOBALS" in obj) {
-        if (!("GLOBALS" in activity.pluginObjs)) {
+    if (typeof obj["GLOBALS"] === "string") {
+        if (typeof activity.pluginObjs["GLOBALS"] !== "string") {
             activity.pluginObjs["GLOBALS"] = "";
         }
         activity.pluginObjs["GLOBALS"] += obj["GLOBALS"];
-    }
-
-    if ("IMAGES" in obj) {
-        activity.pluginObjs["IMAGES"] = obj["IMAGES"];
-    }
-
-    if ("ONLOAD" in obj) {
-        for (const name of Object.keys(obj["ONLOAD"])) {
-            if (isUnsafeObjectKey(name)) continue;
-            activity.pluginObjs["ONLOAD"][name] = obj["ONLOAD"][name];
-        }
-    }
-
-    if ("ONSTART" in obj) {
-        for (const name of Object.keys(obj["ONSTART"])) {
-            if (isUnsafeObjectKey(name)) continue;
-            activity.pluginObjs["ONSTART"][name] = obj["ONSTART"][name];
-        }
-    }
-
-    if ("ONSTOP" in obj) {
-        for (const name of Object.keys(obj["ONSTOP"])) {
-            if (isUnsafeObjectKey(name)) continue;
-            activity.pluginObjs["ONSTOP"][name] = obj["ONSTOP"][name];
-        }
     }
 };
 
